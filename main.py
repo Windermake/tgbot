@@ -25,7 +25,7 @@ STREAMERS_TO_TRACK = [
     "0TV3CHAU", "art_mine", "Ehnenra__", "Zephyr_OK", "relight92",
     "windermake", "FireLegendik", "ILIADOD"
 ]
-ALLOWED_CHAT_IDS = {1689060454}
+ALLOWED_CHAT_IDS = {-1003526710254}
 
 CHECK_INTERVAL = 30
 
@@ -299,6 +299,87 @@ async def check_streams_task():
         logger.info(f"💤 Следующая проверка через {CHECK_INTERVAL} секунд")
         await asyncio.sleep(CHECK_INTERVAL)
 
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    """Обработчик команды /start"""
+    if message.chat.id not in ALLOWED_CHAT_IDS:
+        await message.answer("⛔ Этот бот не предназначен для использования в этом чате.")
+        return
+
+    text = (
+        "🤖 <b>Бот для отслеживания стримов на Twitch</b>\n\n"
+        "Я буду присылать уведомления, когда кто-то из списка стримеров начнет стрим.\n\n"
+        "✨ <b>Особенности:</b>\n"
+        "• 🎬 Уведомления приходят с анимированным GIF стрима\n"
+        "• 🔄 GIF обновляются каждые 5 минут\n"
+        "• 🎲 Рандомное количество зрителей (4-20) для привлечения внимания\n"
+        "• 📝 Автообновление названия и категории стрима\n"
+        "• 🗑️ Сообщение автоматически удаляется после окончания стрима\n"
+        "• 🔕 Все уведомления БЕЗ ЗВУКА\n\n"
+        f"📋 Отслеживается стримеров: {len(STREAMERS_TO_TRACK)}\n"
+        f"🕒 Интервал проверки: {CHECK_INTERVAL} сек.\n"
+        f"🎬 Интервал обновления GIF: {GIF_UPDATE_INTERVAL // 60} мин.\n\n"
+        "Используйте:\n"
+        "/list — список стримеров\n"
+        "/status — статус бота"
+    )
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+
+@dp.message(Command("list"))
+async def cmd_list(message: Message):
+    """Показывает список отслеживаемых стримеров"""
+    if message.chat.id not in ALLOWED_CHAT_IDS:
+        return
+
+    await message.answer("🔄 Получаю список стримеров...")
+    
+    active_streams = await check_streams()
+    active_logins = set(active_streams.keys())
+
+    text = "📋 <b>Список отслеживаемых стримеров:</b>\n\n"
+    for login in STREAMERS_TO_TRACK:
+        status = "🟢 В ЭФИРЕ" if login in active_logins else "⚫ Не в эфире"
+        notified = " (🔔 уведомление отправлено)" if login in notified_streamers else ""
+        text += f"• {login} — {status}{notified}\n"
+
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n... и другие"
+
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+
+@dp.message(Command("status"))
+async def cmd_status(message: Message):
+    """Показывает текущий статус бота"""
+    if message.chat.id not in ALLOWED_CHAT_IDS:
+        return
+
+    await message.answer("🔄 Проверяю статус стримов...")
+    
+    active_streams = await check_streams()
+    live_count = len(active_streams)
+
+    text = (
+        "📊 <b>Статус бота</b>\n\n"
+        f"🎯 Отслеживается стримеров: {len(STREAMERS_TO_TRACK)}\n"
+        f"🔴 Сейчас в эфире: {live_count}\n"
+        f"🔔 Активных уведомлений: {len(notified_streamers)}\n"
+        f"⏱️ Интервал проверки: {CHECK_INTERVAL} сек.\n"
+        f"🎬 Обновление GIF: каждые {GIF_UPDATE_INTERVAL // 60} мин.\n"
+        f"🎲 Режим зрителей: Рандом (4-20)\n"
+        f"🎬 Анимация: GIF\n"
+        f"🗑️ Автоудаление: Включено\n"
+    )
+
+    if active_streams:
+        text += "\n<b>Сейчас в эфире:</b>\n"
+        for login, info in active_streams.items():
+            last_update = last_gif_update.get(login)
+            last_update_str = f" (GIF обновлен {last_update.strftime('%H:%M:%S')})" if last_update else ""
+            text += f"• {info['user_name']} — {info['game_name']}{last_update_str}\n"
+
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 
