@@ -46,9 +46,6 @@ else:
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 GIF_UPDATE_INTERVAL = int(os.getenv("GIF_UPDATE_INTERVAL", "300"))
 
-# Настройки прокси
-PROXY_URL = os.getenv("PROXY_URL", None)
-
 # Директория для данных
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 TEMP_DIR = DATA_DIR / "temp"
@@ -278,14 +275,13 @@ async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, 
     
     try:
         if gif_path and Path(gif_path).exists():
-            with open(gif_path, 'rb') as gif:
-                message = await bot.send_animation(
-                    chat_id=chat_id,
-                    animation=types.FSInputFile(gif_path),
-                    caption=text,
-                    reply_markup=keyboard,
-                    disable_notification=True,
-                )
+            message = await bot.send_animation(
+                chat_id=chat_id,
+                animation=types.FSInputFile(gif_path),
+                caption=text,
+                reply_markup=keyboard,
+                disable_notification=True,
+            )
         else:
             message = await bot.send_message(
                 chat_id=chat_id,
@@ -386,16 +382,15 @@ async def update_gifs_task(bot: Bot):
                                 )
                                 
                                 try:
-                                    with open(new_gif, 'rb') as gif:
-                                        await bot.edit_message_media(
-                                            chat_id=stream_data["chat_id"],
-                                            message_id=stream_data["message_id"],
-                                            media=InputMediaPhoto(
-                                                media=types.FSInputFile(new_gif),
-                                                caption=text
-                                            ),
-                                            reply_markup=keyboard
-                                        )
+                                    await bot.edit_message_media(
+                                        chat_id=stream_data["chat_id"],
+                                        message_id=stream_data["message_id"],
+                                        media=InputMediaPhoto(
+                                            media=types.FSInputFile(new_gif),
+                                            caption=text
+                                        ),
+                                        reply_markup=keyboard
+                                    )
                                     
                                     old_gif = stream_data.get('current_gif')
                                     if old_gif and old_gif != new_gif:
@@ -473,18 +468,8 @@ async def main():
         logger.error("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN")
         return
     
-    # Создаем сессию с правильными параметрами
-    # AiohttpSession принимает только proxy, timeout и другие параметры aiohttp
-    session_params = {}
-    
-    if PROXY_URL:
-        session_params["proxy"] = PROXY_URL
-        logger.info(f"Используется прокси: {PROXY_URL}")
-    
-    # Добавляем таймаут
-    session_params["timeout"] = aiohttp.ClientTimeout(total=60)
-    
-    session = AiohttpSession(**session_params)
+    # Создаем простую сессию без прокси
+    session = AiohttpSession()
     bot_instance = Bot(
         token=BOT_TOKEN,
         session=session,
