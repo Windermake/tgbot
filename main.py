@@ -88,13 +88,12 @@ async def create_gif_from_url(url: str, output_path: str, duration: int = 3, fps
         frames_dir.mkdir(exist_ok=True)
         
         frames = []
-        connector = aiohttp.TCPConnector(ssl=False)
         
         for i in range(duration * fps):
             frame_url = f"{url}?t={i/fps}"
             
             try:
-                async with aiohttp.ClientSession(connector=connector) as session:
+                async with aiohttp.ClientSession() as session:
                     async with session.get(frame_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             frame_path = frames_dir / f"frame_{i:03d}.jpg"
@@ -212,8 +211,7 @@ async def get_twitch_token() -> str:
             "grant_type": "client_credentials",
         }
 
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        async with aiohttp.ClientSession() as session:
             async with session.post(url, data=data) as response:
                 if response.status == 200:
                     data = await response.json()
@@ -235,7 +233,6 @@ async def check_streams() -> Dict[str, dict]:
 
     try:
         all_streams = {}
-        connector = aiohttp.TCPConnector(ssl=False)
         
         for i in range(0, len(STREAMERS_TO_TRACK), 100):
             batch = STREAMERS_TO_TRACK[i:i + 100]
@@ -248,7 +245,7 @@ async def check_streams() -> Dict[str, dict]:
             
             params = [('user_login', login) for login in batch]
             
-            async with aiohttp.ClientSession(connector=connector) as session:
+            async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, params=params) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -281,13 +278,14 @@ async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, 
     
     try:
         if gif_path and Path(gif_path).exists():
-            message = await bot.send_animation(
-                chat_id=chat_id,
-                animation=types.FSInputFile(gif_path),
-                caption=text,
-                reply_markup=keyboard,
-                disable_notification=True,
-            )
+            with open(gif_path, 'rb') as gif:
+                message = await bot.send_animation(
+                    chat_id=chat_id,
+                    animation=types.FSInputFile(gif_path),
+                    caption=text,
+                    reply_markup=keyboard,
+                    disable_notification=True,
+                )
         else:
             message = await bot.send_message(
                 chat_id=chat_id,
@@ -414,7 +412,6 @@ async def update_gifs_task(bot: Bot):
 
 
 # ========== СОЗДАНИЕ ДИСПЕТЧЕРА ==========
-# Создаем диспетчер после определения всех функций
 dp = Dispatcher()
 
 
@@ -476,21 +473,16 @@ async def main():
         logger.error("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN")
         return
     
-    # Создаем сессию внутри асинхронной функции
-    session_params = {
-        "timeout": aiohttp.ClientTimeout(total=60, connect=30),
-        "connector": aiohttp.TCPConnector(
-            ssl=False,
-            limit=10,
-            force_close=True,
-            enable_cleanup_closed=True,
-            ttl_dns_cache=300
-        )
-    }
+    # Создаем сессию с правильными параметрами
+    # AiohttpSession принимает только proxy, timeout и другие параметры aiohttp
+    session_params = {}
     
     if PROXY_URL:
         session_params["proxy"] = PROXY_URL
         logger.info(f"Используется прокси: {PROXY_URL}")
+    
+    # Добавляем таймаут
+    session_params["timeout"] = aiohttp.ClientTimeout(total=60)
     
     session = AiohttpSession(**session_params)
     bot_instance = Bot(
