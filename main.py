@@ -3,7 +3,7 @@ import logging
 import random
 import os
 from datetime import datetime, timedelta
-from typing import Dict, Set, List, Tuple
+from typing import Dict, List, Tuple
 import aiohttp
 from pathlib import Path
 import subprocess
@@ -20,7 +20,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", os.getenv("API_TOKEN", os.getenv("TELEGRAM_BO
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "qrte5j12uko0ue35ntrd4fg6e1v1la")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET", "c11it5b6eop696b2ewc50d7zd3umfa")
 
-# Список стримеров (можно задать через переменную окружения)
+# Список стримеров
 STREAMERS_ENV = os.getenv("STREAMERS_TO_TRACK", "")
 if STREAMERS_ENV:
     STREAMERS_TO_TRACK = [s.strip() for s in STREAMERS_ENV.split(",")]
@@ -35,18 +35,18 @@ else:
         "windermake", "FireLegendik", "ILIADOD"
     ]
 
-# ID чата (можно задать через переменную окружения)
+# ID чата
 ALLOWED_CHATS_ENV = os.getenv("ALLOWED_CHAT_IDS", "")
 if ALLOWED_CHATS_ENV:
     ALLOWED_CHAT_IDS = {int(cid.strip()) for cid in ALLOWED_CHATS_ENV.split(",")}
 else:
-    ALLOWED_CHAT_IDS = {1689060454}  # Ваш ID
+    ALLOWED_CHAT_IDS = {1689060454}
 
 # Интервалы
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 GIF_UPDATE_INTERVAL = int(os.getenv("GIF_UPDATE_INTERVAL", "300"))
 
-# Настройки прокси (если нужен)
+# Настройки прокси
 PROXY_URL = os.getenv("PROXY_URL", None)
 
 # Директория для данных
@@ -66,36 +66,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-
-def create_bot_session():
-    """Создает сессию для бота"""
-    session_params = {
-        "timeout": aiohttp.ClientTimeout(total=60, connect=30),
-        "connector": aiohttp.TCPConnector(
-            ssl=False,
-            limit=10,
-            force_close=True,
-            enable_cleanup_closed=True,
-            ttl_dns_cache=300
-        )
-    }
-    
-    if PROXY_URL:
-        session_params["proxy"] = PROXY_URL
-        logger.info(f"Используется прокси: {PROXY_URL}")
-    
-    return AiohttpSession(**session_params)
-
-
-# Создаем сессию и бота
-session = create_bot_session()
-bot = Bot(
-    token=BOT_TOKEN,
-    session=session,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
-dp = Dispatcher()
 
 
 def format_number_with_emoji(number: int) -> str:
@@ -298,7 +268,7 @@ async def check_streams() -> Dict[str, dict]:
         return {}
 
 
-async def send_stream_notification(chat_id: int, streamer_login: str, stream_info: dict):
+async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, stream_info: dict):
     random_viewers = get_random_viewers()
     text = format_notification_text(streamer_login, stream_info, random_viewers)
     gif_path = await create_stream_gif(streamer_login, stream_info, timestamp=True)
@@ -339,7 +309,7 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
         return None
 
 
-async def delete_stream_notification(chat_id: int, message_id: int, gif_path: str = None):
+async def delete_stream_notification(bot: Bot, chat_id: int, message_id: int, gif_path: str = None):
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
         if gif_path:
@@ -349,7 +319,7 @@ async def delete_stream_notification(chat_id: int, message_id: int, gif_path: st
 
 
 # ========== ФОНОВЫЕ ЗАДАЧИ ==========
-async def check_streams_task():
+async def check_streams_task(bot: Bot):
     logger.info("🚀 Запущена проверка стримов")
     await asyncio.sleep(5)
 
@@ -365,7 +335,7 @@ async def check_streams_task():
                 if is_live and not was_notified:
                     logger.info(f"🔴 СТРИМ НАЧАЛСЯ: {login}")
                     for chat_id in ALLOWED_CHAT_IDS:
-                        result = await send_stream_notification(chat_id, login, active_streams[login])
+                        result = await send_stream_notification(bot, chat_id, login, active_streams[login])
                         if result:
                             notified_streamers[login] = result
 
@@ -373,6 +343,7 @@ async def check_streams_task():
                     logger.info(f"⚫ СТРИМ ЗАКОНЧИЛСЯ: {login}")
                     stream_data = notified_streamers[login]
                     await delete_stream_notification(
+                        bot,
                         stream_data["chat_id"],
                         stream_data["message_id"],
                         stream_data.get("current_gif")
@@ -385,7 +356,7 @@ async def check_streams_task():
         await asyncio.sleep(CHECK_INTERVAL)
 
 
-async def update_gifs_task():
+async def update_gifs_task(bot: Bot):
     """Фоновая задача для обновления GIF"""
     logger.info("🎬 Запущена задача обновления GIF")
     await asyncio.sleep(10)
@@ -484,15 +455,39 @@ async def main():
         logger.error("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN")
         return
     
+    # Создаем сессию внутри асинхронной функции
+    session_params = {
+        "timeout": aiohttp.ClientTimeout(total=60, connect=30),
+        "connector": aiohttp.TCPConnector(
+            ssl=False,
+            limit=10,
+            force_close=True,
+            enable_cleanup_closed=True,
+            ttl_dns_cache=300
+        )
+    }
+    
+    if PROXY_URL:
+        session_params["proxy"] = PROXY_URL
+        logger.info(f"Используется прокси: {PROXY_URL}")
+    
+    session = AiohttpSession(**session_params)
+    bot_instance = Bot(
+        token=BOT_TOKEN,
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+    
     logger.info(f"🤖 Бот запущен. Отслеживается {len(STREAMERS_TO_TRACK)} стримеров")
     logger.info(f"📁 Директория данных: {DATA_DIR}")
     
     # Запускаем фоновые задачи
-    asyncio.create_task(check_streams_task())
-    asyncio.create_task(update_gifs_task())
+    asyncio.create_task(check_streams_task(bot_instance))
+    asyncio.create_task(update_gifs_task(bot_instance))
     
     # Запускаем polling
-    await dp.start_polling(bot)
+    dp.bot = bot_instance
+    await dp.start_polling(bot_instance)
 
 
 if __name__ == "__main__":
