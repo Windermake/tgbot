@@ -338,6 +338,7 @@ async def check_streams_task(bot: Bot):
                         result = await send_stream_notification(bot, chat_id, login, active_streams[login])
                         if result:
                             notified_streamers[login] = result
+                            last_gif_update[login] = datetime.now()
 
                 elif not is_live and was_notified:
                     logger.info(f"⚫ СТРИМ ЗАКОНЧИЛСЯ: {login}")
@@ -349,6 +350,8 @@ async def check_streams_task(bot: Bot):
                         stream_data.get("current_gif")
                     )
                     del notified_streamers[login]
+                    if login in last_gif_update:
+                        del last_gif_update[login]
 
         except Exception as e:
             logger.error(f"Ошибка в задаче: {e}")
@@ -410,6 +413,11 @@ async def update_gifs_task(bot: Bot):
         await asyncio.sleep(GIF_UPDATE_INTERVAL)
 
 
+# ========== СОЗДАНИЕ ДИСПЕТЧЕРА ==========
+# Создаем диспетчер после определения всех функций
+dp = Dispatcher()
+
+
 # ========== КОМАНДЫ ==========
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -442,10 +450,23 @@ async def cmd_status(message: Message):
     
     if active_streams:
         text += "\n🟢 Сейчас в эфире:\n"
-        for login in active_streams:
-            text += f"• {login}\n"
+        for login, info in active_streams.items():
+            text += f"• {info['user_name']}\n"
     
     await message.answer(text)
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    if message.chat.id not in ALLOWED_CHAT_IDS:
+        return
+    
+    await message.answer(
+        "📖 Доступные команды:\n\n"
+        "/start - Информация о боте\n"
+        "/status - Статус отслеживаемых стримов\n"
+        "/help - Эта справка"
+    )
 
 
 # ========== ЗАПУСК ==========
@@ -486,7 +507,6 @@ async def main():
     asyncio.create_task(update_gifs_task(bot_instance))
     
     # Запускаем polling
-    dp.bot = bot_instance
     await dp.start_polling(bot_instance)
 
 
