@@ -25,7 +25,7 @@ STREAMERS_TO_TRACK = [
     "0TV3CHAU", "art_mine", "Ehnenra__", "Zephyr_OK", "relight92",
     "windermake", "FireLegendik", "ILIADOD"
 ]
-ALLOWED_CHAT_IDS = {-1003526710254}
+ALLOWED_CHAT_IDS = {1689060454}
 
 CHECK_INTERVAL = 30
 
