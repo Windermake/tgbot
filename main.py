@@ -2,6 +2,8 @@ import asyncio
 import logging
 import random
 import os
+import signal
+import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 import aiohttp
@@ -56,6 +58,7 @@ notified_streamers: Dict[str, dict] = {}
 twitch_access_token = None
 token_expires_at = None
 last_gif_update = {}
+should_stop = False
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -215,8 +218,9 @@ async def get_twitch_token() -> str:
                     twitch_access_token = data["access_token"]
                     expires_in = data.get("expires_in", 3600)
                     token_expires_at = datetime.now() + timedelta(seconds=expires_in)
-                    logger.info("Twitch token получен")
+                    logger.info("✅ Twitch token получен")
                     return twitch_access_token
+                logger.error(f"Ошибка получения токена: {response.status}")
                 return None
     except Exception as e:
         logger.error(f"Ошибка получения токена: {e}")
@@ -290,6 +294,8 @@ async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, 
                 disable_notification=True,
             )
         
+        logger.info(f"✅ Отправлено уведомление о стриме {streamer_login}")
+        
         return {
             "message_id": message.message_id,
             "chat_id": chat_id,
@@ -297,7 +303,7 @@ async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, 
             "current_gif": gif_path
         }
     except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
+        logger.error(f"❌ Ошибка отправки: {e}")
         if gif_path:
             await delete_temp_file(gif_path)
         return None
@@ -308,6 +314,7 @@ async def delete_stream_notification(bot: Bot, chat_id: int, message_id: int, gi
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
         if gif_path:
             await delete_temp_file(gif_path)
+        logger.info(f"🗑️ Удалено сообщение о стриме")
     except Exception as e:
         logger.error(f"Ошибка удаления: {e}")
 
@@ -317,10 +324,16 @@ async def check_streams_task(bot: Bot):
     logger.info("🚀 Запущена проверка стримов")
     await asyncio.sleep(5)
 
-    while True:
+    while not should_stop:
         try:
+            logger.info("🔍 Проверяю стримы...")
             active_streams = await check_streams()
             active_logins = set(active_streams.keys())
+            
+            if active_logins:
+                logger.info(f"🎥 Найдены активные стримы: {active_logins}")
+            else:
+                logger.info("📭 Активных стримов не найдено")
 
             for login in STREAMERS_TO_TRACK:
                 is_live = login in active_logins
@@ -348,8 +361,9 @@ async def check_streams_task(bot: Bot):
                         del last_gif_update[login]
 
         except Exception as e:
-            logger.error(f"Ошибка в задаче: {e}")
+            logger.error(f"❌ Ошибка в задаче: {e}", exc_info=True)
 
+        logger.info(f"💤 Следующая проверка через {CHECK_INTERVAL} секунд")
         await asyncio.sleep(CHECK_INTERVAL)
 
 
@@ -358,7 +372,7 @@ async def update_gifs_task(bot: Bot):
     logger.info("🎬 Запущена задача обновления GIF")
     await asyncio.sleep(10)
     
-    while True:
+    while not should_stop:
         try:
             if notified_streamers:
                 for login, stream_data in list(notified_streamers.items()):
@@ -398,10 +412,11 @@ async def update_gifs_task(bot: Bot):
                                     
                                     stream_data['current_gif'] = new_gif
                                     last_gif_update[login] = datetime.now()
+                                    logger.info(f"✅ GIF обновлен для {login}")
                                 except Exception as e:
                                     logger.error(f"Ошибка обновления GIF: {e}")
         except Exception as e:
-            logger.error(f"Ошибка в задаче обновления GIF: {e}", exc_info=True)
+            logger.error(f"❌ Ошибка в задаче обновления GIF: {e}", exc_info=True)
         
         await asyncio.sleep(GIF_UPDATE_INTERVAL)
 
@@ -430,6 +445,8 @@ async def cmd_start(message: Message):
 async def cmd_status(message: Message):
     if message.chat.id not in ALLOWED_CHAT_IDS:
         return
+    
+    await message.answer("🔄 Проверяю статус...")
     
     active_streams = await check_streams()
     
@@ -463,12 +480,24 @@ async def cmd_help(message: Message):
 
 # ========== ЗАПУСК ==========
 async def main():
+    global should_stop
+    
+    # Обработка сигналов для graceful shutdown
+    def signal_handler():
+        global should_stop
+        logger.info("Получен сигнал остановки")
+        should_stop = True
+    
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, signal_handler)
+    
     # Проверяем наличие токена
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN")
+        logger.error("BOT_TOKEN не задан!")
         return
     
-    # Создаем простую сессию без прокси
+    # Создаем сессию
     session = AiohttpSession()
     bot_instance = Bot(
         token=BOT_TOKEN,
@@ -484,8 +513,16 @@ async def main():
     asyncio.create_task(update_gifs_task(bot_instance))
     
     # Запускаем polling
-    await dp.start_polling(bot_instance)
+    try:
+        await dp.start_polling(bot_instance)
+    except Exception as e:
+        logger.error(f"Ошибка в polling: {e}")
+    finally:
+        logger.info("Бот остановлен")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
