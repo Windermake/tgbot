@@ -8,7 +8,7 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.enums import ParseMode
 
 # ========== КОНФИГУРАЦИЯ ==========
@@ -25,7 +25,7 @@ STREAMERS_TO_TRACK = [
     "0TV3CHAU", "art_mine", "Ehnenra__", "Zephyr_OK", "relight92",
     "windermake", "FireLegendik", "ILIADOD"
 ]
-ALLOWED_CHAT_IDS = {-1003526710254}
+ALLOWED_CHAT_IDS = {1689060454}
 
 CHECK_INTERVAL = 30
 
@@ -45,7 +45,6 @@ logger = logging.getLogger(__name__)
 
 
 def format_number_with_emoji(number: int) -> str:
-    """Форматирует число с эмодзи цифр"""
     emoji_digits = {
         '0': '0️⃣', '1': '1️⃣', '2': '2️⃣', '3': '3️⃣', '4': '4️⃣',
         '5': '5️⃣', '6': '6️⃣', '7': '7️⃣', '8': '8️⃣', '9': '9️⃣'
@@ -54,65 +53,29 @@ def format_number_with_emoji(number: int) -> str:
 
 
 def get_random_viewers() -> int:
-    """Случайное число зрителей от 4 до 20"""
+    """смешнявка с рандомными зрителями"""
     return random.randint(4, 20)
 
 
 async def take_screenshot(streamer_login: str, stream_info: dict) -> str:
-    """Делает скриншот стрима с проверкой на валидность"""
+    """Делает скриншот стрима"""
     try:
-        # Пробуем несколько вариантов URL
-        urls_to_try = []
-        
-        # Вариант 1: стандартное превью Twitch
         thumbnail_url = stream_info.get('thumbnail_url')
-        if thumbnail_url:
-            urls_to_try.append(thumbnail_url)
-        
-        # Вариант 2: превью с другим размером
-        urls_to_try.append(f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{streamer_login}-640x360.jpg")
-        
-        # Вариант 3: превью с высоким качеством
-        urls_to_try.append(f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{streamer_login}-1920x1080.jpg")
-        
-        # Вариант 4: используем API для получения превью
-        urls_to_try.append(f"https://api.twitch.tv/helix/streams?user_login={streamer_login}")
-        
+        if not thumbnail_url:
+            thumbnail_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{streamer_login}-640x360.jpg"
+
         filename = SCREENSHOTS_DIR / f"{streamer_login}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-        
+
         async with aiohttp.ClientSession() as session:
-            for url in urls_to_try:
-                try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            content_type = response.headers.get('Content-Type', '')
-                            
-                            # Проверяем, что это изображение, а не заглушка
-                            if 'image' in content_type:
-                                image_data = await response.read()
-                                
-                                # Проверяем, что размер изображения больше 10KB (заглушка обычно меньше)
-                                if len(image_data) > 10000:
-                                    with open(filename, 'wb') as f:
-                                        f.write(image_data)
-                                    logger.info(f"✅ Скриншот сохранен: {filename} (размер: {len(image_data)} байт)")
-                                    return str(filename)
-                                else:
-                                    logger.warning(f"Скриншот слишком маленький ({len(image_data)} байт), пробуем следующий URL")
-                            else:
-                                logger.warning(f"Не изображение: {content_type}")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Таймаут при загрузке {url}")
-                    except Exception as e:
-                        logger.warning(f"Ошибка при загрузке {url}: {e}")
-                
-                # Небольшая пауза между попытками
-                await asyncio.sleep(0.5)
-        
-        # Если не удалось загрузить нормальный скриншот, возвращаем None
-        logger.error(f"Не удалось загрузить валидный скриншот для {streamer_login}")
-        return None
-        
+            async with session.get(thumbnail_url) as response:
+                if response.status == 200:
+                    with open(filename, 'wb') as f:
+                        f.write(await response.read())
+                    logger.info(f"Скриншот сохранен: {filename}")
+                    return str(filename)
+                else:
+                    logger.error(f"Не удалось загрузить скриншот: {response.status}")
+                    return None
     except Exception as e:
         logger.error(f"Ошибка при создании скриншота: {e}")
         return None
@@ -129,32 +92,16 @@ async def delete_screenshot(filepath: str):
 
 
 def format_notification_text(streamer_login: str, stream_info: dict, random_viewers: int) -> str:
-    """Форматирует текст уведомления в нужном стиле"""
     title = stream_info['title']
     game_name = stream_info['game_name']
+    
     formatted_viewers = format_number_with_emoji(random_viewers)
     
-    # Время в эфире
-    started_at = stream_info.get('started_at', '')
-    time_info = ""
-    if started_at:
-        try:
-            start_time = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-            duration = datetime.now() - start_time
-            hours = duration.seconds // 3600
-            minutes = (duration.seconds % 3600) // 60
-            if hours > 0:
-                time_info = f" (в эфире {hours}ч {minutes}мин)"
-            else:
-                time_info = f" (в эфире {minutes}мин)"
-        except:
-            pass
-    
     text = (
-        f"🔴 Стрим <b>«{title}»</b> уже идёт!{time_info}\n"
+        f"🔴 Стрим <b>«{title}»</b> уже идёт!\n"
         f"Категория: {game_name}\n\n"
         f"{formatted_viewers} зрителей на стриме. Не хватает только тебя!\n\n"
-        f"Кто с тг, пишите «сосо».\n"
+        f"Там чот интересное происходит\n"
         f"<a href='https://twitch.tv/{streamer_login}'>https://twitch.tv/{streamer_login}</a>"
     )
     
@@ -196,7 +143,7 @@ async def get_twitch_token() -> str:
 
 
 async def check_streams() -> Dict[str, dict]:
-    """Проверяет активные стримы"""
+    """Проверяет актив"""
     token = await get_twitch_token()
     if not token:
         logger.error("Нет токена для доступа к Twitch API")
@@ -246,7 +193,7 @@ async def check_streams() -> Dict[str, dict]:
 
 # ========== ФУНКЦИЯ ОТПРАВКИ УВЕДОМЛЕНИЯ ==========
 async def send_stream_notification(chat_id: int, streamer_login: str, stream_info: dict):
-    """Отправляет уведомление со скриншотом"""
+    
     random_viewers = get_random_viewers()
     text = format_notification_text(streamer_login, stream_info, random_viewers)
 
@@ -262,32 +209,17 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
     )
     
     try:
-        if screenshot_path and Path(screenshot_path).exists():
-            # Проверяем размер файла перед отправкой
-            file_size = Path(screenshot_path).stat().st_size
-            if file_size > 10000:  # Если файл больше 10KB
-                with open(screenshot_path, 'rb') as photo:
-                    message = await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=types.FSInputFile(screenshot_path),
-                        caption=text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=keyboard,
-                        disable_notification=True,
-                    )
-                logger.info(f"✅ Отправлено уведомление со скриншотом для {streamer_login}")
-                await delete_screenshot(screenshot_path)
-            else:
-                logger.warning(f"Скриншот слишком маленький ({file_size} байт), отправляю без фото")
-                message = await bot.send_message(
+        if screenshot_path:
+            with open(screenshot_path, 'rb') as photo:
+                message = await bot.send_photo(
                     chat_id=chat_id,
-                    text=text,
+                    photo=types.FSInputFile(screenshot_path),
+                    caption=text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard,
                     disable_notification=True,
-                    disable_web_page_preview=False,
                 )
-                await delete_screenshot(screenshot_path)
+            await delete_screenshot(screenshot_path)
         else:
             message = await bot.send_message(
                 chat_id=chat_id,
@@ -297,8 +229,10 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
                 disable_notification=True,
                 disable_web_page_preview=False,
             )
-            logger.info(f"✅ Отправлено текстовое уведомление для {streamer_login}")
         
+        logger.info(f"✅ Отправлено уведомление о стриме {streamer_login} (сообщение ID: {message.message_id})")
+        
+        # Сохраняем ID сообщения что бы удобно потом удалить эту парашу
         return {
             "message_id": message.message_id,
             "chat_id": chat_id,
@@ -307,8 +241,6 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
         }
     except Exception as e:
         logger.error(f"❌ Ошибка отправки сообщения: {e}")
-        if screenshot_path:
-            await delete_screenshot(screenshot_path)
         return None
 
 
@@ -316,10 +248,10 @@ async def delete_stream_notification(chat_id: int, message_id: int):
     """Удаляет сообщение о стриме"""
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        logger.info(f"🗑️ Удалено сообщение о завершившемся стриме")
+        logger.info(f"🗑️ Удалено сообщение {message_id} о завершившемся стриме")
         return True
     except Exception as e:
-        logger.error(f"❌ Ошибка при удалении сообщения: {e}")
+        logger.error(f"❌ Ошибка при удалении сообщения {message_id}: {e}")
         return False
 
 
@@ -337,7 +269,6 @@ async def check_streams_task():
             
             logger.info(f"Активные стримы: {active_logins}")
             logger.info(f"Уведомленные стримеры: {list(notified_streamers.keys())}")
-            
             for login in STREAMERS_TO_TRACK:
                 is_live = login in active_logins
                 was_notified = login in notified_streamers
@@ -359,6 +290,7 @@ async def check_streams_task():
                         chat_id=stream_data["chat_id"],
                         message_id=stream_data["message_id"]
                     )
+
                     del notified_streamers[login]
 
         except Exception as e:
@@ -367,8 +299,6 @@ async def check_streams_task():
         logger.info(f"💤 Следующая проверка через {CHECK_INTERVAL} секунд")
         await asyncio.sleep(CHECK_INTERVAL)
 
-
-# ========== КОМАНДЫ ==========
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     """Обработчик команды /start"""
@@ -380,16 +310,18 @@ async def cmd_start(message: Message):
         "🤖 <b>Бот для отслеживания стримов на Twitch</b>\n\n"
         "Я буду присылать уведомления, когда кто-то из списка стримеров начнет стрим.\n\n"
         "✨ <b>Особенности:</b>\n"
-        "• 📸 Уведомления приходят со скриншотом стрима\n"
+        "• 🎬 Уведомления приходят с анимированным GIF стрима\n"
+        "• 🔄 GIF обновляются каждые 5 минут\n"
         "• 🎲 Рандомное количество зрителей (4-20) для привлечения внимания\n"
+        "• 📝 Автообновление названия и категории стрима\n"
         "• 🗑️ Сообщение автоматически удаляется после окончания стрима\n"
         "• 🔕 Все уведомления БЕЗ ЗВУКА\n\n"
         f"📋 Отслеживается стримеров: {len(STREAMERS_TO_TRACK)}\n"
-        f"🕒 Интервал проверки: {CHECK_INTERVAL} сек.\n\n"
+        f"🕒 Интервал проверки: {CHECK_INTERVAL} сек.\n"
+        f"🎬 Интервал обновления GIF: {GIF_UPDATE_INTERVAL // 60} мин.\n\n"
         "Используйте:\n"
         "/list — список стримеров\n"
-        "/status — статус бота\n"
-        "/help — помощь"
+        "/status — статус бота"
     )
     await message.answer(text, parse_mode=ParseMode.HTML)
 
@@ -434,39 +366,25 @@ async def cmd_status(message: Message):
         f"🔴 Сейчас в эфире: {live_count}\n"
         f"🔔 Активных уведомлений: {len(notified_streamers)}\n"
         f"⏱️ Интервал проверки: {CHECK_INTERVAL} сек.\n"
+        f"🎬 Обновление GIF: каждые {GIF_UPDATE_INTERVAL // 60} мин.\n"
         f"🎲 Режим зрителей: Рандом (4-20)\n"
-        f"📸 Скриншоты: Включены\n"
+        f"🎬 Анимация: GIF\n"
         f"🗑️ Автоудаление: Включено\n"
     )
 
     if active_streams:
         text += "\n<b>Сейчас в эфире:</b>\n"
         for login, info in active_streams.items():
-            text += f"• {info['user_name']} — {info['game_name']}\n"
+            last_update = last_gif_update.get(login)
+            last_update_str = f" (GIF обновлен {last_update.strftime('%H:%M:%S')})" if last_update else ""
+            text += f"• {info['user_name']} — {info['game_name']}{last_update_str}\n"
 
     await message.answer(text, parse_mode=ParseMode.HTML)
 
 
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    """Показывает справку"""
-    if message.chat.id not in ALLOWED_CHAT_IDS:
-        return
-    
-    text = (
-        "📖 <b>Доступные команды:</b>\n\n"
-        "/start — Начало работы и информация о боте\n"
-        "/list — Показать список отслеживаемых стримеров\n"
-        "/status — Текущий статус (кто в онлайне)\n"
-        "/help — Эта справка\n\n"
-        "🔕 Все уведомления приходят <b>БЕЗ ЗВУКА</b>"
-    )
-    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
-# ========== ЗАПУСК ==========
 async def main():
-    # Очищаем папку со скриншотами при старте
     for file in SCREENSHOTS_DIR.glob("*.jpg"):
         try:
             file.unlink()
