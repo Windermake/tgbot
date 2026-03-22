@@ -3,7 +3,6 @@ import logging
 import random
 import os
 import signal
-import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 import aiohttp
@@ -16,10 +15,18 @@ from aiogram.enums import ParseMode
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.bot import DefaultBotProperties
 
-# ========== КОНФИГУРАЦИЯ ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN", os.getenv("API_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN")))
-TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "qrte5j12uko0ue35ntrd4fg6e1v1la")
-TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET", "c11it5b6eop696b2ewc50d7zd3umfa")
+# ========== КОНФИГУРАЦИЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("API_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
+TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+
+# Проверка наличия обязательных переменных
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не задан в переменных окружения!")
+if not TWITCH_CLIENT_ID:
+    raise ValueError("TWITCH_CLIENT_ID не задан в переменных окружения!")
+if not TWITCH_CLIENT_SECRET:
+    raise ValueError("TWITCH_CLIENT_SECRET не задан в переменных окружения!")
 
 # Список стримеров
 STREAMERS_TO_TRACK = [
@@ -34,15 +41,17 @@ STREAMERS_TO_TRACK = [
 ]
 
 # ID чата
-ALLOWED_CHAT_IDS = {1689060454}
+ALLOWED_CHATS_ENV = os.getenv("ALLOWED_CHAT_IDS", "")
+if ALLOWED_CHATS_ENV:
+    ALLOWED_CHAT_IDS = {int(cid.strip()) for cid in ALLOWED_CHATS_ENV.split(",")}
+else:
+    ALLOWED_CHAT_IDS = {1689060454}
 
 # Интервалы
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))
 
 # Директория для данных
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
-TEMP_DIR = DATA_DIR / "temp"
-TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 notified_streamers: Dict[str, dict] = {}
@@ -121,10 +130,12 @@ async def get_twitch_token() -> str:
                     token_expires_at = datetime.now() + timedelta(seconds=expires_in)
                     logger.info("✅ Twitch token получен")
                     return twitch_access_token
-                logger.error(f"Ошибка получения токена: {response.status}")
-                return None
+                else:
+                    error_text = await response.text()
+                    logger.error(f"❌ Ошибка получения токена {response.status}: {error_text}")
+                    return None
     except Exception as e:
-        logger.error(f"Ошибка получения токена: {e}")
+        logger.error(f"❌ Ошибка получения токена: {e}")
         return None
 
 
@@ -159,16 +170,20 @@ async def check_streams() -> Dict[str, dict]:
                                 "game_name": stream["game_name"],
                                 "viewer_count": stream["viewer_count"],
                                 "started_at": stream["started_at"],
-                                "thumbnail_url": stream["thumbnail_url"].format(width=640, height=360) if stream.get("thumbnail_url") else None,
                             }
+                            logger.info(f"📺 Найден стрим: {login} - {stream['title'][:50]}")
+                    else:
+                        logger.error(f"❌ Ошибка Twitch API {response.status}")
+                        return {}
+        
         return all_streams
     except Exception as e:
-        logger.error(f"Ошибка проверки стримов: {e}")
+        logger.error(f"❌ Ошибка проверки стримов: {e}")
         return {}
 
 
 async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, stream_info: dict):
-    """Отправляет уведомление о начале стрима (без GIF)"""
+    """Отправляет уведомление о начале стрима"""
     random_viewers = get_random_viewers()
     text = format_notification_text(streamer_login, stream_info, random_viewers)
     
@@ -178,39 +193,27 @@ async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, 
         ]
     )
     
-    # Пробуем отправить с ретраями
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            message = await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-                disable_notification=True,
-                disable_web_page_preview=False,
-                request_timeout=30  # Таймаут на отправку
-            )
-            
-            logger.info(f"✅ Отправлено уведомление о стриме {streamer_login}")
-            
-            return {
-                "message_id": message.message_id,
-                "chat_id": chat_id,
-                "stream_info": stream_info,
-                "random_viewers": random_viewers
-            }
-            
-        except asyncio.TimeoutError:
-            logger.warning(f"⚠️ Таймаут при отправке (попытка {attempt + 1}/{max_retries})")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2)
-            else:
-                logger.error(f"❌ Не удалось отправить уведомление после {max_retries} попыток")
-                return None
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки: {e}")
-            return None
+    try:
+        message = await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+            disable_notification=True,
+            disable_web_page_preview=False,
+        )
+        
+        logger.info(f"✅ Отправлено уведомление о стриме {streamer_login} в чат {chat_id}")
+        
+        return {
+            "message_id": message.message_id,
+            "chat_id": chat_id,
+            "stream_info": stream_info,
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки: {e}")
+        return None
 
 
 async def delete_stream_notification(bot: Bot, chat_id: int, message_id: int):
@@ -222,7 +225,7 @@ async def delete_stream_notification(bot: Bot, chat_id: int, message_id: int):
         logger.error(f"Ошибка удаления: {e}")
 
 
-# ========== ФОНОВЫЕ ЗАДАЧИ ==========
+# ========== ФОНОВАЯ ЗАДАЧА ==========
 async def check_streams_task(bot: Bot):
     logger.info("🚀 Запущена проверка стримов")
     await asyncio.sleep(5)
@@ -234,10 +237,11 @@ async def check_streams_task(bot: Bot):
             active_logins = set(active_streams.keys())
             
             if active_logins:
-                logger.info(f"🎥 Найдены активные стримы: {active_logins}")
+                logger.info(f"🎥 Активные стримы: {active_logins}")
             else:
-                logger.info("📭 Активных стримов не найдено")
+                logger.info("📭 Активных стримов нет")
 
+            # Проверяем новых стримеров
             for login in STREAMERS_TO_TRACK:
                 is_live = login in active_logins
                 was_notified = login in notified_streamers
@@ -252,17 +256,13 @@ async def check_streams_task(bot: Bot):
                 elif not is_live and was_notified:
                     logger.info(f"⚫ СТРИМ ЗАКОНЧИЛСЯ: {login}")
                     stream_data = notified_streamers[login]
-                    await delete_stream_notification(
-                        bot,
-                        stream_data["chat_id"],
-                        stream_data["message_id"]
-                    )
+                    await delete_stream_notification(bot, stream_data["chat_id"], stream_data["message_id"])
                     del notified_streamers[login]
 
         except Exception as e:
             logger.error(f"❌ Ошибка в задаче: {e}", exc_info=True)
 
-        logger.info(f"💤 Следующая проверка через {CHECK_INTERVAL} секунд")
+        logger.info(f"💤 Следующая проверка через {CHECK_INTERVAL} сек")
         await asyncio.sleep(CHECK_INTERVAL)
 
 
@@ -278,9 +278,10 @@ async def cmd_start(message: Message):
         return
     
     await message.answer(
-        f"🤖 Бот запущен!\n\n"
-        f"📋 Отслеживается стримеров: {len(STREAMERS_TO_TRACK)}\n"
-        f"🕒 Интервал проверки: {CHECK_INTERVAL} сек.\n\n"
+        f"🤖 <b>Twitch Stream Monitor</b>\n\n"
+        f"📋 Отслеживается: {len(STREAMERS_TO_TRACK)} стримеров\n"
+        f"🕒 Интервал проверки: {CHECK_INTERVAL} сек\n"
+        f"👤 Ваш ID: {message.chat.id}\n\n"
         f"Используйте /status для проверки статуса"
     )
 
@@ -295,18 +296,19 @@ async def cmd_status(message: Message):
     active_streams = await check_streams()
     
     text = (
-        f"📊 Статус бота\n\n"
+        f"📊 <b>Статус бота</b>\n\n"
         f"🎯 Отслеживается: {len(STREAMERS_TO_TRACK)} стримеров\n"
         f"🔴 Сейчас в эфире: {len(active_streams)}\n"
         f"🔔 Активных уведомлений: {len(notified_streamers)}\n"
+        f"⏱️ Интервал: {CHECK_INTERVAL} сек\n"
     )
     
     if active_streams:
-        text += "\n🟢 Сейчас в эфире:\n"
+        text += "\n🟢 <b>Сейчас в эфире:</b>\n"
         for login, info in active_streams.items():
-            text += f"• {info['user_name']}\n"
+            text += f"• {info['user_name']} — {info['game_name']}\n"
     
-    await message.answer(text)
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 # ========== ЗАПУСК ==========
@@ -321,39 +323,29 @@ async def main():
     
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, signal_handler)
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except NotImplementedError:
+            pass
     
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN не задан!")
-        return
+    logger.info(f"🚀 Запуск бота...")
+    logger.info(f"📁 DATA_DIR: {DATA_DIR}")
+    logger.info(f"📋 ALLOWED_CHAT_IDS: {ALLOWED_CHAT_IDS}")
     
-    # Создаем сессию с увеличенными таймаутами
-    session = AiohttpSession(
-        timeout=aiohttp.ClientTimeout(total=60, connect=30, sock_read=30)
-    )
+    # Создаем сессию
+    session = AiohttpSession()
     bot_instance = Bot(
         token=BOT_TOKEN,
         session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     
-    logger.info(f"🤖 Бот запущен. Отслеживается {len(STREAMERS_TO_TRACK)} стримеров")
-    logger.info(f"📁 Директория данных: {DATA_DIR}")
-    
     # Запускаем фоновую задачу
     asyncio.create_task(check_streams_task(bot_instance))
     
     # Запускаем polling
-    try:
-        await dp.start_polling(bot_instance)
-    except Exception as e:
-        logger.error(f"Ошибка в polling: {e}")
-    finally:
-        logger.info("Бот остановлен")
+    await dp.start_polling(bot_instance)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
+    asyncio.run(main())
