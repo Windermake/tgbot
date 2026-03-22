@@ -116,15 +116,21 @@ def format_notification_text(streamer_login: str, stream_info: dict, random_view
 
 # ========== РАБОТА С GIF ==========
 async def create_gif_from_url(url: str, output_path: str, duration: int = 3, fps: int = 8) -> bool:
-    """Создает GIF из URL с помощью ffmpeg"""
+    """Создает GIF из URL с разными кадрами"""
     try:
         frames_dir = TEMP_DIR / f"frames_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         frames_dir.mkdir(exist_ok=True)
         
         frames = []
         
+        # Добавляем задержку между кадрами, чтобы получить разные изображения
         for i in range(duration * fps):
-            frame_url = f"{url}?t={i/fps}"
+            # Разные параметры для получения разных кадров
+            # Используем комбинацию времени и случайного параметра
+            timestamp = i / fps
+            # Добавляем случайный параметр, чтобы получить разные кадры
+            random_param = random.randint(1, 1000)
+            frame_url = f"{url}?t={timestamp}&r={random_param}"
             
             try:
                 async with aiohttp.ClientSession() as session:
@@ -134,8 +140,14 @@ async def create_gif_from_url(url: str, output_path: str, duration: int = 3, fps
                             with open(frame_path, 'wb') as f:
                                 f.write(await response.read())
                             frames.append(str(frame_path))
+                            logger.debug(f"Кадр {i} загружен")
+                        else:
+                            logger.warning(f"Ошибка загрузки кадра {i}: {response.status}")
             except Exception as e:
                 logger.warning(f"Ошибка загрузки кадра {i}: {e}")
+            
+            # Небольшая задержка между запросами, чтобы превью успело обновиться
+            await asyncio.sleep(0.3)
         
         if len(frames) < 2:
             if frames:
@@ -156,20 +168,26 @@ async def create_gif_from_url(url: str, output_path: str, duration: int = 3, fps
                 return True
             return False
         
-        # Создаем GIF
+        # Создаем GIF с более плавной анимацией
         cmd = [
-            'ffmpeg', '-framerate', str(fps), '-pattern_type', 'glob',
+            'ffmpeg',
+            '-framerate', str(fps),
+            '-pattern_type', 'glob',
             '-i', f'{frames_dir}/frame_*.jpg',
-            '-vf', 'scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
-            '-loop', '0', '-y', output_path
+            '-vf', 'scale=480:-1:flags=lanczos,fps=10,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
+            '-loop', '0',
+            '-y',
+            output_path
         ]
         
-        subprocess.run(cmd, capture_output=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         
-        if Path(output_path).exists():
-            logger.info(f"✅ GIF создан: {output_path}")
+        if Path(output_path).exists() and Path(output_path).stat().st_size > 1000:
+            logger.info(f"✅ GIF создан: {output_path} ({Path(output_path).stat().st_size} байт)")
             return True
-        return False
+        else:
+            logger.error(f"Ошибка создания GIF: файл слишком маленький или пустой")
+            return False
         
     except Exception as e:
         logger.error(f"Ошибка создания GIF: {e}")
@@ -181,7 +199,6 @@ async def create_gif_from_url(url: str, output_path: str, duration: int = 3, fps
             frames_dir.rmdir()
         except:
             pass
-
 
 async def create_stream_gif(streamer_login: str, stream_info: dict, timestamp: bool = True) -> str:
     """Создает GIF из превью стрима"""
