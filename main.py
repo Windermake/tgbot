@@ -59,24 +59,60 @@ def get_random_viewers() -> int:
 
 
 async def take_screenshot(streamer_login: str, stream_info: dict) -> str:
-    """Делает скриншот стрима"""
+    """Делает скриншот стрима с проверкой на валидность"""
     try:
+        # Пробуем несколько вариантов URL
+        urls_to_try = []
+        
+        # Вариант 1: стандартное превью Twitch
         thumbnail_url = stream_info.get('thumbnail_url')
-        if not thumbnail_url:
-            thumbnail_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{streamer_login}-640x360.jpg"
-
+        if thumbnail_url:
+            urls_to_try.append(thumbnail_url)
+        
+        # Вариант 2: превью с другим размером
+        urls_to_try.append(f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{streamer_login}-640x360.jpg")
+        
+        # Вариант 3: превью с высоким качеством
+        urls_to_try.append(f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{streamer_login}-1920x1080.jpg")
+        
+        # Вариант 4: используем API для получения превью
+        urls_to_try.append(f"https://api.twitch.tv/helix/streams?user_login={streamer_login}")
+        
         filename = SCREENSHOTS_DIR / f"{streamer_login}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(thumbnail_url) as response:
-                if response.status == 200:
-                    with open(filename, 'wb') as f:
-                        f.write(await response.read())
-                    logger.info(f"Скриншот сохранен: {filename}")
-                    return str(filename)
-                else:
-                    logger.error(f"Не удалось загрузить скриншот: {response.status}")
-                    return None
+            for url in urls_to_try:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            content_type = response.headers.get('Content-Type', '')
+                            
+                            # Проверяем, что это изображение, а не заглушка
+                            if 'image' in content_type:
+                                image_data = await response.read()
+                                
+                                # Проверяем, что размер изображения больше 10KB (заглушка обычно меньше)
+                                if len(image_data) > 10000:
+                                    with open(filename, 'wb') as f:
+                                        f.write(image_data)
+                                    logger.info(f"✅ Скриншот сохранен: {filename} (размер: {len(image_data)} байт)")
+                                    return str(filename)
+                                else:
+                                    logger.warning(f"Скриншот слишком маленький ({len(image_data)} байт), пробуем следующий URL")
+                            else:
+                                logger.warning(f"Не изображение: {content_type}")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Таймаут при загрузке {url}")
+                    except Exception as e:
+                        logger.warning(f"Ошибка при загрузке {url}: {e}")
+                
+                # Небольшая пауза между попытками
+                await asyncio.sleep(0.5)
+        
+        # Если не удалось загрузить нормальный скриншот, возвращаем None
+        logger.error(f"Не удалось загрузить валидный скриншот для {streamer_login}")
+        return None
+        
     except Exception as e:
         logger.error(f"Ошибка при создании скриншота: {e}")
         return None
@@ -226,17 +262,32 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
     )
     
     try:
-        if screenshot_path:
-            with open(screenshot_path, 'rb') as photo:
-                message = await bot.send_photo(
+        if screenshot_path and Path(screenshot_path).exists():
+            # Проверяем размер файла перед отправкой
+            file_size = Path(screenshot_path).stat().st_size
+            if file_size > 10000:  # Если файл больше 10KB
+                with open(screenshot_path, 'rb') as photo:
+                    message = await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=types.FSInputFile(screenshot_path),
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=keyboard,
+                        disable_notification=True,
+                    )
+                logger.info(f"✅ Отправлено уведомление со скриншотом для {streamer_login}")
+                await delete_screenshot(screenshot_path)
+            else:
+                logger.warning(f"Скриншот слишком маленький ({file_size} байт), отправляю без фото")
+                message = await bot.send_message(
                     chat_id=chat_id,
-                    photo=types.FSInputFile(screenshot_path),
-                    caption=text,
+                    text=text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard,
                     disable_notification=True,
+                    disable_web_page_preview=False,
                 )
-            await delete_screenshot(screenshot_path)
+                await delete_screenshot(screenshot_path)
         else:
             message = await bot.send_message(
                 chat_id=chat_id,
@@ -246,8 +297,7 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
                 disable_notification=True,
                 disable_web_page_preview=False,
             )
-        
-        logger.info(f"✅ Отправлено уведомление о стриме {streamer_login}")
+            logger.info(f"✅ Отправлено текстовое уведомление для {streamer_login}")
         
         return {
             "message_id": message.message_id,
@@ -257,6 +307,8 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
         }
     except Exception as e:
         logger.error(f"❌ Ошибка отправки сообщения: {e}")
+        if screenshot_path:
+            await delete_screenshot(screenshot_path)
         return None
 
 
@@ -336,7 +388,8 @@ async def cmd_start(message: Message):
         f"🕒 Интервал проверки: {CHECK_INTERVAL} сек.\n\n"
         "Используйте:\n"
         "/list — список стримеров\n"
-        "/status — статус бота"
+        "/status — статус бота\n"
+        "/help — помощь"
     )
     await message.answer(text, parse_mode=ParseMode.HTML)
 
