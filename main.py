@@ -25,7 +25,7 @@ STREAMERS_TO_TRACK = [
     "0TV3CHAU", "art_mine", "Ehnenra__", "Zephyr_OK", "relight92",
     "windermake", "FireLegendik", "ILIADOD"
 ]
-ALLOWED_CHAT_IDS = {1689060454}
+ALLOWED_CHAT_IDS = {-1003526710254}
 
 CHECK_INTERVAL = 30
 SCREENSHOT_UPDATE_INTERVAL = 120  # 2 минуты (120 секунд)
@@ -99,10 +99,10 @@ def format_notification_text(streamer_login: str, stream_info: dict, random_view
     formatted_viewers = format_number_with_emoji(random_viewers)
     
     text = (
-        f"🔴 Стрим <b>«{title}»</b> уже идёт!\n"
+        f"❤️ Стрим <b>«{title}»</b> уже идёт! {streamer_login}\n"
         f"Категория: {game_name}\n\n"
         f"{formatted_viewers} зрителей на стриме. Не хватает только тебя!\n\n"
-        f"Там чот интересное происходит\n"
+        f"Пишите что вы от ТК ВКУСНО\n"
         f"<a href='https://twitch.tv/{streamer_login}'>https://twitch.tv/{streamer_login}</a>"
     )
     
@@ -238,7 +238,7 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
-                text="🎬 Смотреть на Twitch",
+                text="🎬 Смотреть на Твиче",
                 url=f"https://twitch.tv/{streamer_login}"
             )]
         ]
