@@ -6,11 +6,10 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 import aiohttp
 from pathlib import Path
-import subprocess
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.enums import ParseMode
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.bot import DefaultBotProperties
@@ -44,7 +43,6 @@ else:
 
 # Интервалы
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))
-GIF_UPDATE_INTERVAL = int(os.getenv("GIF_UPDATE_INTERVAL", "300"))
 
 # Директория для данных
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
@@ -55,7 +53,6 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 notified_streamers: Dict[str, dict] = {}
 twitch_token = None
 token_expires = None
-last_gif_update = {}
 
 # ========== ЛОГИРОВАНИЕ ==========
 logging.basicConfig(
@@ -82,7 +79,7 @@ def get_random_viewers() -> int:
 
 
 def format_notification_text(streamer_login: str, stream_info: dict, random_viewers: int) -> str:
-    """Форматирует текст уведомления в нужном стиле"""
+    """Форматирует текст уведомления"""
     title = stream_info['title']
     game_name = stream_info['game_name']
     formatted_viewers = format_number_with_emoji(random_viewers)
@@ -114,108 +111,30 @@ def format_notification_text(streamer_login: str, stream_info: dict, random_view
     return text
 
 
-# ========== РАБОТА С GIF ==========
-async def create_gif_from_url(url: str, output_path: str, duration: int = 3, fps: int = 8) -> bool:
-    """Создает GIF из URL с разными кадрами"""
-    try:
-        frames_dir = TEMP_DIR / f"frames_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        frames_dir.mkdir(exist_ok=True)
-        
-        frames = []
-        
-        # Добавляем задержку между кадрами, чтобы получить разные изображения
-        for i in range(duration * fps):
-            # Разные параметры для получения разных кадров
-            # Используем комбинацию времени и случайного параметра
-            timestamp = i / fps
-            # Добавляем случайный параметр, чтобы получить разные кадры
-            random_param = random.randint(1, 1000)
-            frame_url = f"{url}?t={timestamp}&r={random_param}"
-            
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(frame_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            frame_path = frames_dir / f"frame_{i:03d}.jpg"
-                            with open(frame_path, 'wb') as f:
-                                f.write(await response.read())
-                            frames.append(str(frame_path))
-                            logger.debug(f"Кадр {i} загружен")
-                        else:
-                            logger.warning(f"Ошибка загрузки кадра {i}: {response.status}")
-            except Exception as e:
-                logger.warning(f"Ошибка загрузки кадра {i}: {e}")
-            
-            # Небольшая задержка между запросами, чтобы превью успело обновиться
-            await asyncio.sleep(0.3)
-        
-        if len(frames) < 2:
-            if frames:
-                import shutil
-                shutil.copy(frames[0], output_path)
-                logger.info(f"✅ Сохранено статичное изображение")
-                return True
-            return False
-        
-        # Проверяем ffmpeg
-        try:
-            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        except:
-            if frames:
-                import shutil
-                shutil.copy(frames[0], output_path)
-                logger.info(f"✅ ffmpeg не найден, сохранено статичное изображение")
-                return True
-            return False
-        
-        # Создаем GIF с более плавной анимацией
-        cmd = [
-            'ffmpeg',
-            '-framerate', str(fps),
-            '-pattern_type', 'glob',
-            '-i', f'{frames_dir}/frame_*.jpg',
-            '-vf', 'scale=480:-1:flags=lanczos,fps=10,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
-            '-loop', '0',
-            '-y',
-            output_path
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if Path(output_path).exists() and Path(output_path).stat().st_size > 1000:
-            logger.info(f"✅ GIF создан: {output_path} ({Path(output_path).stat().st_size} байт)")
-            return True
-        else:
-            logger.error(f"Ошибка создания GIF: файл слишком маленький или пустой")
-            return False
-        
-    except Exception as e:
-        logger.error(f"Ошибка создания GIF: {e}")
-        return False
-    finally:
-        try:
-            for frame in frames:
-                Path(frame).unlink()
-            frames_dir.rmdir()
-        except:
-            pass
-
-async def create_stream_gif(streamer_login: str, stream_info: dict, timestamp: bool = True) -> str:
-    """Создает GIF из превью стрима"""
+# ========== РАБОТА СО СКРИНШОТАМИ ==========
+async def take_screenshot(streamer_login: str, stream_info: dict) -> str:
+    """Делает скриншот стрима (просто скачивает превью)"""
     try:
         thumbnail_url = stream_info.get('thumbnail_url')
         if not thumbnail_url:
             thumbnail_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{streamer_login}-640x360.jpg"
         
-        if timestamp:
-            filename = TEMP_DIR / f"{streamer_login}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gif"
-        else:
-            filename = TEMP_DIR / f"{streamer_login}_current.gif"
+        # Добавляем время, чтобы избежать кэширования
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = TEMP_DIR / f"{streamer_login}_{timestamp}.jpg"
         
-        await create_gif_from_url(thumbnail_url, str(filename))
-        return str(filename) if filename.exists() else None
+        async with aiohttp.ClientSession() as session:
+            async with session.get(thumbnail_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    with open(filename, 'wb') as f:
+                        f.write(await response.read())
+                    logger.info(f"📸 Скриншот сохранен: {filename}")
+                    return str(filename)
+                else:
+                    logger.error(f"Ошибка загрузки скриншота: {response.status}")
+                    return None
     except Exception as e:
-        logger.error(f"Ошибка создания GIF: {e}")
+        logger.error(f"Ошибка создания скриншота: {e}")
         return None
 
 
@@ -300,10 +219,10 @@ async def check_streams() -> Dict[str, dict]:
 
 
 async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, stream_info: dict):
-    """Отправляет уведомление с GIF"""
+    """Отправляет уведомление со скриншотом"""
     random_viewers = get_random_viewers()
     text = format_notification_text(streamer_login, stream_info, random_viewers)
-    gif_path = await create_stream_gif(streamer_login, stream_info, timestamp=True)
+    screenshot_path = await take_screenshot(streamer_login, stream_info)
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -312,16 +231,16 @@ async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, 
     )
     
     try:
-        if gif_path and Path(gif_path).exists():
-            with open(gif_path, 'rb') as gif:
-                message = await bot.send_animation(
+        if screenshot_path and Path(screenshot_path).exists():
+            with open(screenshot_path, 'rb') as photo:
+                message = await bot.send_photo(
                     chat_id=chat_id,
-                    animation=types.FSInputFile(gif_path),
+                    photo=types.FSInputFile(screenshot_path),
                     caption=text,
                     reply_markup=keyboard,
                     disable_notification=True,
                 )
-            logger.info(f"✅ Отправлено уведомление с GIF для {streamer_login}")
+            logger.info(f"✅ Отправлено уведомление со скриншотом для {streamer_login}")
         else:
             message = await bot.send_message(
                 chat_id=chat_id,
@@ -336,27 +255,27 @@ async def send_stream_notification(bot: Bot, chat_id: int, streamer_login: str, 
             "message_id": message.message_id,
             "chat_id": chat_id,
             "stream_info": stream_info,
-            "current_gif": gif_path
+            "current_screenshot": screenshot_path
         }
     except Exception as e:
         logger.error(f"❌ Ошибка отправки: {e}")
-        if gif_path:
-            await delete_temp_file(gif_path)
+        if screenshot_path:
+            await delete_temp_file(screenshot_path)
         return None
 
 
-async def delete_stream_notification(bot: Bot, chat_id: int, message_id: int, gif_path: str = None):
+async def delete_stream_notification(bot: Bot, chat_id: int, message_id: int, screenshot_path: str = None):
     """Удаляет сообщение о стриме"""
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        if gif_path:
-            await delete_temp_file(gif_path)
+        if screenshot_path:
+            await delete_temp_file(screenshot_path)
         logger.info(f"🗑️ Удалено сообщение о стриме")
     except Exception as e:
         logger.error(f"Ошибка удаления: {e}")
 
 
-# ========== ФОНОВЫЕ ЗАДАЧИ ==========
+# ========== ФОНОВАЯ ЗАДАЧА ==========
 async def check_streams_task(bot: Bot):
     logger.info("🚀 Запущена проверка стримов")
     await asyncio.sleep(5)
@@ -382,7 +301,6 @@ async def check_streams_task(bot: Bot):
                         result = await send_stream_notification(bot, chat_id, login, active_streams[login])
                         if result:
                             notified_streamers[login] = result
-                            last_gif_update[login] = datetime.now()
                 
                 elif not is_live and was_notified:
                     logger.info(f"⚫ СТРИМ ЗАКОНЧИЛСЯ: {login}")
@@ -391,11 +309,9 @@ async def check_streams_task(bot: Bot):
                         bot,
                         stream_data["chat_id"],
                         stream_data["message_id"],
-                        stream_data.get("current_gif")
+                        stream_data.get("current_screenshot")
                     )
                     del notified_streamers[login]
-                    if login in last_gif_update:
-                        del last_gif_update[login]
         
         except Exception as e:
             logger.error(f"❌ Ошибка в задаче: {e}")
@@ -413,10 +329,9 @@ async def cmd_start(message: Message):
     await message.answer(
         f"🤖 <b>Twitch Stream Monitor</b>\n\n"
         f"📋 Отслеживается: {len(STREAMERS_TO_TRACK)} стримеров\n"
-        f"🕒 Интервал проверки: {CHECK_INTERVAL} сек\n"
-        f"🎬 GIF обновляются каждые {GIF_UPDATE_INTERVAL // 60} мин\n\n"
+        f"🕒 Интервал проверки: {CHECK_INTERVAL} сек\n\n"
         f"✨ <b>Особенности:</b>\n"
-        f"• 🎬 Анимированные GIF со стрима\n"
+        f"• 📸 Скриншот со стрима\n"
         f"• 🎲 Рандомное количество зрителей (4-20)\n"
         f"• 🔕 Уведомления без звука\n"
         f"• 🗑️ Автоудаление после окончания стрима\n\n"
