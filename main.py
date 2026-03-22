@@ -14,7 +14,7 @@ from aiogram.enums import ParseMode
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8528588588:AAHU9n281SgZM64nbAwNtjWL4RriVRYO-yc"
 TWITCH_CLIENT_ID = "qrte5j12uko0ue35ntrd4fg6e1v1la"
-TWITCH_CLIENT_SECRET = "d4ohqyd0eyihepbn1ib9gvo8ooibge"
+TWITCH_CLIENT_SECRET = "ceqt19ttojt3rd3gluamezwn3t6zri"
 
 STREAMERS_TO_TRACK = [
     "ke7oo", "knox_pl1y", "ne3enit", "nct2g", "griz_lgn", "nori_mr",
@@ -28,6 +28,7 @@ STREAMERS_TO_TRACK = [
 ALLOWED_CHAT_IDS = {1689060454}
 
 CHECK_INTERVAL = 30
+SCREENSHOT_UPDATE_INTERVAL = 120  # 2 минуты (120 секунд)
 
 SCREENSHOTS_DIR = Path("screenshots")
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
@@ -142,6 +143,41 @@ async def get_twitch_token() -> str:
         return None
 
 
+async def get_stream_info(streamer_login: str) -> dict:
+    """Получает актуальную информацию о конкретном стримере"""
+    token = await get_twitch_token()
+    if not token:
+        return None
+
+    try:
+        url = "https://api.twitch.tv/helix/streams"
+        headers = {
+            "Client-ID": TWITCH_CLIENT_ID,
+            "Authorization": f"Bearer {token}",
+        }
+        params = {'user_login': streamer_login}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    streams = data.get("data", [])
+                    if streams:
+                        stream = streams[0]
+                        return {
+                            "user_name": stream["user_name"],
+                            "title": stream["title"],
+                            "game_name": stream["game_name"],
+                            "viewer_count": stream["viewer_count"],
+                            "started_at": stream["started_at"],
+                            "thumbnail_url": stream["thumbnail_url"].format(width=640, height=360) if stream.get("thumbnail_url") else None,
+                        }
+                return None
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о стримере {streamer_login}: {e}")
+        return None
+
+
 async def check_streams() -> Dict[str, dict]:
     """Проверяет актив"""
     token = await get_twitch_token()
@@ -232,16 +268,74 @@ async def send_stream_notification(chat_id: int, streamer_login: str, stream_inf
         
         logger.info(f"✅ Отправлено уведомление о стриме {streamer_login} (сообщение ID: {message.message_id})")
         
-        # Сохраняем ID сообщения что бы удобно потом удалить эту парашу
+        # Сохраняем ID сообщения и информацию о стримере
         return {
             "message_id": message.message_id,
             "chat_id": chat_id,
             "stream_info": stream_info,
-            "random_viewers": random_viewers
+            "random_viewers": random_viewers,
+            "last_screenshot_update": datetime.now()  # время последнего обновления скриншота
         }
     except Exception as e:
         logger.error(f"❌ Ошибка отправки сообщения: {e}")
         return None
+
+
+async def update_stream_screenshot(streamer_login: str, notification_data: dict):
+    """Обновляет скриншот в сообщении о стриме"""
+    try:
+        # Получаем актуальную информацию о стриме
+        current_stream_info = await get_stream_info(streamer_login)
+        if not current_stream_info:
+            logger.warning(f"Не удалось получить актуальную информацию о стриме {streamer_login}")
+            return False
+        
+        # Создаем новый скриншот
+        new_screenshot_path = await take_screenshot(streamer_login, current_stream_info)
+        if not new_screenshot_path:
+            logger.warning(f"Не удалось создать новый скриншот для {streamer_login}")
+            return False
+        
+        # Обновляем текст сообщения с актуальной информацией
+        random_viewers = get_random_viewers()
+        text = format_notification_text(streamer_login, current_stream_info, random_viewers)
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="🎬 Смотреть на Twitch",
+                    url=f"https://twitch.tv/{streamer_login}"
+                )]
+            ]
+        )
+        
+        # Редактируем сообщение с новым фото
+        with open(new_screenshot_path, 'rb') as photo:
+            await bot.edit_message_media(
+                chat_id=notification_data["chat_id"],
+                message_id=notification_data["message_id"],
+                media=InputMediaPhoto(
+                    media=types.FSInputFile(new_screenshot_path),
+                    caption=text,
+                    parse_mode=ParseMode.HTML
+                ),
+                reply_markup=keyboard
+            )
+        
+        # Удаляем старый скриншот
+        await delete_screenshot(new_screenshot_path)
+        
+        # Обновляем данные в notified_streamers
+        notification_data["stream_info"] = current_stream_info
+        notification_data["random_viewers"] = random_viewers
+        notification_data["last_screenshot_update"] = datetime.now()
+        
+        logger.info(f"🖼️ Обновлен скриншот для {streamer_login}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обновлении скриншота для {streamer_login}: {e}")
+        return False
 
 
 async def delete_stream_notification(chat_id: int, message_id: int):
@@ -269,6 +363,7 @@ async def check_streams_task():
             
             logger.info(f"Активные стримы: {active_logins}")
             logger.info(f"Уведомленные стримеры: {list(notified_streamers.keys())}")
+            
             for login in STREAMERS_TO_TRACK:
                 is_live = login in active_logins
                 was_notified = login in notified_streamers
@@ -290,7 +385,6 @@ async def check_streams_task():
                         chat_id=stream_data["chat_id"],
                         message_id=stream_data["message_id"]
                     )
-
                     del notified_streamers[login]
 
         except Exception as e:
@@ -299,6 +393,40 @@ async def check_streams_task():
         logger.info(f"💤 Следующая проверка через {CHECK_INTERVAL} секунд")
         await asyncio.sleep(CHECK_INTERVAL)
 
+
+# ========== ФОНОВАЯ ЗАДАЧА ОБНОВЛЕНИЯ СКРИНШОТОВ ==========
+async def update_screenshots_task():
+    """Фоновая задача для обновления скриншотов каждые 2 минуты"""
+    logger.info("🖼️ Запущена фоновая задача обновления скриншотов")
+    
+    await asyncio.sleep(10)  # Даем время на запуск основной проверки
+    
+    while True:
+        try:
+            if notified_streamers:
+                logger.info(f"🔄 Обновляю скриншоты для {len(notified_streamers)} активных стримов...")
+                
+                for login, notification_data in list(notified_streamers.items()):
+                    # Проверяем, не прошло ли 2 минуты с последнего обновления
+                    time_since_update = datetime.now() - notification_data.get("last_screenshot_update", datetime.min)
+                    
+                    if time_since_update.total_seconds() >= SCREENSHOT_UPDATE_INTERVAL:
+                        logger.info(f"🖼️ Обновляю скриншот для {login} (прошло {time_since_update.total_seconds():.0f} сек)")
+                        await update_stream_screenshot(login, notification_data)
+                    else:
+                        remaining = SCREENSHOT_UPDATE_INTERVAL - time_since_update.total_seconds()
+                        logger.debug(f"⏳ Скриншот для {login} обновится через {remaining:.0f} сек")
+            else:
+                logger.debug("Нет активных стримов, обновление скриншотов не требуется")
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка в задаче обновления скриншотов: {e}", exc_info=True)
+        
+        # Проверяем каждые 30 секунд, нужно ли обновлять скриншоты
+        await asyncio.sleep(30)
+
+
+# ========== КОМАНДЫ БОТА ==========
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     """Обработчик команды /start"""
@@ -310,15 +438,15 @@ async def cmd_start(message: Message):
         "🤖 <b>Бот для отслеживания стримов на Twitch</b>\n\n"
         "Я буду присылать уведомления, когда кто-то из списка стримеров начнет стрим.\n\n"
         "✨ <b>Особенности:</b>\n"
-        "• 🎬 Уведомления приходят с анимированным GIF стрима\n"
-        "• 🔄 GIF обновляются каждые 5 минут\n"
+        "• 🎬 Уведомления приходят со скриншотом стрима\n"
+        "• 🔄 Скриншоты обновляются каждые 2 минуты\n"
         "• 🎲 Рандомное количество зрителей (4-20) для привлечения внимания\n"
         "• 📝 Автообновление названия и категории стрима\n"
         "• 🗑️ Сообщение автоматически удаляется после окончания стрима\n"
         "• 🔕 Все уведомления БЕЗ ЗВУКА\n\n"
         f"📋 Отслеживается стримеров: {len(STREAMERS_TO_TRACK)}\n"
         f"🕒 Интервал проверки: {CHECK_INTERVAL} сек.\n"
-        f"🎬 Интервал обновления GIF: {GIF_UPDATE_INTERVAL // 60} мин.\n\n"
+        f"🖼️ Интервал обновления скриншотов: {SCREENSHOT_UPDATE_INTERVAL // 60} мин.\n\n"
         "Используйте:\n"
         "/list — список стримеров\n"
         "/status — статус бота"
@@ -366,32 +494,34 @@ async def cmd_status(message: Message):
         f"🔴 Сейчас в эфире: {live_count}\n"
         f"🔔 Активных уведомлений: {len(notified_streamers)}\n"
         f"⏱️ Интервал проверки: {CHECK_INTERVAL} сек.\n"
-        f"🎬 Обновление GIF: каждые {GIF_UPDATE_INTERVAL // 60} мин.\n"
+        f"🖼️ Интервал обновления скриншотов: {SCREENSHOT_UPDATE_INTERVAL // 60} мин.\n"
         f"🎲 Режим зрителей: Рандом (4-20)\n"
-        f"🎬 Анимация: GIF\n"
         f"🗑️ Автоудаление: Включено\n"
     )
 
     if active_streams:
         text += "\n<b>Сейчас в эфире:</b>\n"
         for login, info in active_streams.items():
-            last_update = last_gif_update.get(login)
-            last_update_str = f" (GIF обновлен {last_update.strftime('%H:%M:%S')})" if last_update else ""
+            last_update = notified_streamers.get(login, {}).get("last_screenshot_update")
+            last_update_str = f" (скриншот обновлен {last_update.strftime('%H:%M:%S')})" if last_update else ""
             text += f"• {info['user_name']} — {info['game_name']}{last_update_str}\n"
 
     await message.answer(text, parse_mode=ParseMode.HTML)
 
 
-
-
+# ========== ЗАПУСК БОТА ==========
 async def main():
+    # Очищаем старые скриншоты при запуске
     for file in SCREENSHOTS_DIR.glob("*.jpg"):
         try:
             file.unlink()
         except:
             pass
     
+    # Запускаем фоновые задачи
     asyncio.create_task(check_streams_task())
+    asyncio.create_task(update_screenshots_task())
+    
     logger.info("🤖 Бот запущен")
     await dp.start_polling(bot)
 
